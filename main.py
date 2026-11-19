@@ -312,13 +312,69 @@ def forecast_case(case, name):
     return {"trophies": rows}
 
 
+def validate_output(forecast, trophies, name):
+    """Validate a forecast: fail loudly on any defect, change nothing.
+
+    Checks the output has one row per trophy (55 for this competition),
+    each row carries the right trophy id and exactly len(LEVELS) quantiles,
+    and every quantile is a finite number in [0, 100] and non-decreasing
+    across the levels. A safety net only: it never changes the model or
+    the numbers, it only refuses to let a bad forecast through.
+    """
+    rows = forecast.get("trophies")
+    if not isinstance(rows, list):
+        raise ValueError(f"{name}: forecast has no trophy list")
+    if len(rows) != len(trophies):
+        raise ValueError(
+            f"{name}: expected {len(trophies)} trophy rows, got {len(rows)}")
+    if len(rows) != 55:
+        raise ValueError(f"{name}: expected 55 trophy rows, got {len(rows)}")
+    expected_ids = [t["id"] for t in trophies]
+    for i, row in enumerate(rows):
+        if row.get("id") != expected_ids[i]:
+            raise ValueError(
+                f"{name}: row {i} id {row.get('id')!r} "
+                f"!= trophy {expected_ids[i]!r}")
+        qs = row.get("q")
+        if not isinstance(qs, list) or len(qs) != len(LEVELS):
+            n = len(qs) if isinstance(qs, list) else "no"
+            raise ValueError(
+                f"{name}: trophy {row.get('id')} has {n} quantiles, "
+                f"expected {len(LEVELS)}")
+        prev = None
+        for q in qs:
+            if isinstance(q, bool) or not isinstance(q, (int, float)):
+                raise ValueError(
+                    f"{name}: trophy {row.get('id')} has non-numeric "
+                    f"quantile {q!r}")
+            if not math.isfinite(q):
+                raise ValueError(
+                    f"{name}: trophy {row.get('id')} has non-finite "
+                    f"quantile {q!r}")
+            if q < 0 or q > 100:
+                raise ValueError(
+                    f"{name}: trophy {row.get('id')} quantile {q} "
+                    "outside 0-100")
+            if prev is not None and q < prev:
+                raise ValueError(
+                    f"{name}: trophy {row.get('id')} quantiles decrease "
+                    f"({prev} -> {q})")
+            prev = q
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for path in sorted(INPUT_DIR.glob("*.in")):
         case = json.loads(path.read_text(encoding="utf-8"))
         forecast = forecast_case(case, path.name)
-        (OUTPUT_DIR / f"{path.stem}.out").write_text(
+        # Validate before writing so a bad forecast never lands on disk,
+        # and again after reading the file back so a bad round-trip is caught.
+        validate_output(forecast, case["trophies"], path.name)
+        out_path = OUTPUT_DIR / f"{path.stem}.out"
+        out_path.write_text(
             json.dumps(forecast, separators=(",", ":")) + "\n", encoding="utf-8")
+        validate_output(json.loads(out_path.read_text(encoding="utf-8")),
+                        case["trophies"], f"{path.name} (written)")
 
 
 if __name__ == "__main__":
